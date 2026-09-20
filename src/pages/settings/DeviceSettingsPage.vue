@@ -48,6 +48,10 @@
         <i class="fas fa-info-circle"></i>
         从官方客户端抓包的 X-App-Device（逆序 Base64 解码后首字段）获取。与登录状态及"自定义设备指纹"开关相互独立，修改后立即生效，清空即恢复默认设备码。
       </p>
+      <p class="szlm-warning">
+        <i class="fas fa-exclamation-triangle"></i>
+        必须填写自己手机的数字联盟ID：共享或使用他人的ID会被风控封禁，设备号被封后该手机将无法使用酷安。填写后建议在"自定义设备指纹"中将机型设为与该手机一致，以降低校验风险。
+      </p>
     </div>
 
     <div class="setting-group">
@@ -458,6 +462,19 @@ function resetToDefault() {
   font-size: var(--font-size-caption);
   color: #e0533d;
   margin: var(--space-2) 0 0;
+}
+
+.szlm-warning {
+  font-size: var(--font-size-caption);
+  color: #e0533d;
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  margin: 0;
+}
+
+.szlm-warning i {
+  margin-top: 2px;
 }
 
 .status-box {
