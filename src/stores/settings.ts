@@ -91,6 +91,8 @@ const defaultDeviceFingerprint: DeviceFingerprintSettings = {
   sdkInt: '35',
   locale: 'zh-CN',
   darkMode: '0',
+  // 数字联盟ID 默认留空（使用默认设备码），由用户按需填写
+  szlmId: '',
 };
 
 /** 由设备信息字段拼装酷安移动端 User-Agent */
@@ -314,6 +316,7 @@ export function normalizeSettings(value: unknown): AppSettings {
     result.deviceFingerprint.sdkInt = readString(fingerprint.sdkInt, result.deviceFingerprint.sdkInt);
     result.deviceFingerprint.locale = readString(fingerprint.locale, result.deviceFingerprint.locale);
     if (isOneOf(fingerprint.darkMode, ['0', '1'])) result.deviceFingerprint.darkMode = fingerprint.darkMode;
+    result.deviceFingerprint.szlmId = readString(fingerprint.szlmId, result.deviceFingerprint.szlmId).trim().slice(0, 64);
   }
   if (result.deviceSignature === '酷安桌面版') result.deviceSignature = '';
   return result;
@@ -633,22 +636,26 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   // 将"设备信息"设置同步给 Rust 客户端（作用于所有 API 请求头）。
-  // 未启用自定义时下发空对象，Rust 端保持默认值。
+  // 数字联盟ID 与 customFingerprint 开关相互独立：仅填写它也会覆盖设备码；
+  // 其余字段未启用自定义时不下发，Rust 端保持默认值。
   function syncDeviceProfile(s: AppSettings) {
     if (typeof window === 'undefined' || !(window as any).__TAURI_INTERNALS__) return;
     const f = s.deviceFingerprint;
     invoke('update_device_profile', {
-      profile: f.customFingerprint
-        ? {
-            userAgent: buildDeviceUserAgent(f),
-            sdkInt: f.sdkInt,
-            locale: f.locale,
-            appVersion: f.appVersion,
-            appCode: f.appCode,
-            apiVersion: '16',
-            darkMode: f.darkMode,
-          }
-        : {},
+      profile: {
+        szlmId: f.szlmId.trim(),
+        ...(f.customFingerprint
+          ? {
+              userAgent: buildDeviceUserAgent(f),
+              sdkInt: f.sdkInt,
+              locale: f.locale,
+              appVersion: f.appVersion,
+              appCode: f.appCode,
+              apiVersion: '16',
+              darkMode: f.darkMode,
+            }
+          : {}),
+      },
     }).catch((err) => {
       console.warn('同步设备信息设置失败:', err);
     });

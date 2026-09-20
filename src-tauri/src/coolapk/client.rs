@@ -361,23 +361,29 @@ fn build_create_feed_form_for_type(
 
 /// 设备信息覆盖配置（由设置页"设备信息"下发，作用于所有 API 请求头）。
 /// 字段为 None 时使用客户端默认值；全部留空表示恢复默认。
-/// 注意：X-App-Device（设备码）与 X-App-Token 属于账号绑定指纹，不允许覆盖。
+/// 注意：X-App-Device（设备码）与 X-App-Token 属于账号绑定指纹，仅允许
+/// 通过数字联盟ID（szlm_id）覆盖设备码首字段。
+/// serde 字段带 camelCase 别名：前端 invoke 传的是 camelCase 键。
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct DeviceProfile {
-    #[serde(default)]
+    #[serde(default, alias = "userAgent")]
     pub user_agent: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "sdkInt")]
     pub sdk_int: Option<String>,
     #[serde(default)]
     pub locale: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "appVersion")]
     pub app_version: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "appCode")]
     pub app_code: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "apiVersion")]
     pub api_version: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "darkMode")]
     pub dark_mode: Option<String>,
+    /// 数字联盟ID（数盟 ddid）：写入设备码首字段并覆盖默认设备码，
+    /// 用于修复评论、发帖等写操作的服务端设备校验；留空不生效。
+    #[serde(default, alias = "szlmId")]
+    pub szlm_id: Option<String>,
 }
 
 /// 移动端 UA：酷安网页（账号安全页/移动版页面）在桌面 UA 下会白屏或重定向
@@ -824,6 +830,7 @@ fn image_source_url(value: &Value) -> Option<String> {
 
 impl CoolapkClient {
     /// 设备码策略：
+    /// - 已设置数字联盟ID：以其为首字段生成设备码（修复写操作设备校验）
     /// - 未登录（游客态）：每台电脑首次启动随机生成一次并持久化，之后固定
     /// - 已登录：使用账号绑定的固定设备码（首次登录生成随机并持久化，之后固定）
     /// 设备码与 Token V3 绑定，切换时 auth 签名同步切换。
@@ -874,12 +881,15 @@ impl CoolapkClient {
             .get_app_token()
     }
 
-    /// 同步设备码：已登录使用该账号绑定的固定设备码，
-    /// 未登录使用本机持久化的游客设备码（每台电脑首次生成后固定）。
-    /// 两者都会持久化，重启后保持不变。
+    /// 同步设备码，优先级：数字联盟ID > 账号绑定 > 游客。
+    /// - 用户填写数字联盟ID：以其为首字段派生设备码（设置持久化，无需落盘）
+    /// - 已登录：使用该账号绑定的固定设备码
+    /// - 未登录：使用本机持久化的游客设备码（每台电脑首次生成后固定）
     pub fn sync_device_code(&self) {
         let uid = self.current_uid();
-        let code = if let Some(uid) = uid {
+        let code = if let Some(szlm_id) = self.custom_szlm_id() {
+            generate_device_code_with_szlm(&szlm_id)
+        } else if let Some(uid) = uid {
             self.account_device_code(&uid)
         } else {
             self.guest_device_code()
@@ -889,6 +899,27 @@ impl CoolapkClient {
         }
         if let Ok(mut guard) = self.device_code.write() {
             *guard = code;
+        }
+    }
+
+    /// 用户在设置页填写的数字联盟ID：去除首尾空白、剔除分号与控制字符后
+    /// 非空才生效（分号会破坏设备码字段结构，控制字符无法作为请求头值）。
+    fn custom_szlm_id(&self) -> Option<String> {
+        let cleaned: String = self
+            .device_profile
+            .read()
+            .ok()?
+            .szlm_id
+            .as_deref()?
+            .trim()
+            .chars()
+            .filter(|c| c.is_ascii_graphic() && *c != ';')
+            .take(64)
+            .collect();
+        if cleaned.is_empty() {
+            None
+        } else {
+            Some(cleaned)
         }
     }
 
@@ -998,14 +1029,16 @@ impl CoolapkClient {
         Ok(request)
     }
 
-    /// 更新设备信息覆盖配置（由设置页调用；传空字段即恢复默认）
+    /// 更新设备信息覆盖配置（由设置页调用；传空字段即恢复默认）。
+    /// 数字联盟ID 会改变设备码，应用后立即重新同步签名身份（修改即时生效）。
     pub fn update_device_profile(&self, profile: DeviceProfile) {
         if let Ok(mut guard) = self.device_profile.write() {
             *guard = profile;
         }
+        self.sync_device_code();
     }
 
-    /// 当前设备信息（设置页展示用）：登录态 + 生效设备码
+    /// 当前设备信息（设置页展示用）：登录态 + 生效设备码 + 数字联盟ID覆盖态
     pub fn get_device_info(&self) -> Result<Value, String> {
         let code = self
             .device_code
@@ -1017,7 +1050,8 @@ impl CoolapkClient {
             .read()
             .map_err(|_| "failed to read login state".to_string())?
             .is_some();
-        Ok(json!({ "code": 200, "data": { "loggedIn": logged_in, "deviceCode": code } }))
+        let szlm_active = self.custom_szlm_id().is_some();
+        Ok(json!({ "code": 200, "data": { "loggedIn": logged_in, "szlmActive": szlm_active, "deviceCode": code } }))
     }
 
     /// 绑定 Cookie 持久化文件路径，并载入上次保存的登录凭据
@@ -8004,6 +8038,31 @@ fn generate_device_code_for_id(uid: &str) -> String {
     let raw = format!(
         "{android_id}; ; ; ; Xiaomi; Xiaomi; 23113RKC6C; UKQ1.230804.001; "
     );
+    let b64 = BASE64.encode(raw.as_bytes());
+    let mut rev: String = b64.chars().rev().collect();
+    rev.retain(|c| c != '=' && c != '\r' && c != '\n');
+    rev
+}
+
+/// 以用户提供的数字联盟ID生成设备码（官方逆序 Base64 格式）。
+/// 首字段写入数字联盟ID（与 c001apk 等第三方客户端一致）；MAC 由 ID 派生
+/// 并置本地管理位，保证同一 ID 每次生成相同设备码——Token V3 与设备码绑定，
+/// 随机 MAC 会导致每次同步都换一套签名身份。
+fn generate_device_code_with_szlm(szlm_id: &str) -> String {
+    use md5::{Digest, Md5};
+
+    let mut hasher = Md5::new();
+    hasher.update(szlm_id.as_bytes());
+    let digest = hasher.finalize();
+    let mut mac_bytes = [0u8; 6];
+    mac_bytes.copy_from_slice(&digest[..6]);
+    mac_bytes[0] = (mac_bytes[0] & 0xFE) | 0x02;
+    let mac = mac_bytes
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(":");
+    let raw = format!("{szlm_id}; ; ; {mac}; Xiaomi; Xiaomi; 23113RKC6C; UKQ1.230804.001; null");
     let b64 = BASE64.encode(raw.as_bytes());
     let mut rev: String = b64.chars().rev().collect();
     rev.retain(|c| c != '=' && c != '\r' && c != '\n');

@@ -141,17 +141,21 @@ describe('设置页面交互', () => {
   it('设备页覆盖设备指纹输入、预设、警告和恢复默认', async () => {
     const { wrapper, settings } = mountPage(DeviceSettingsPage);
     await flushPromises();
+    // 数字联盟ID：独立于自定义设备指纹开关，默认留空由用户填写
+    await wrapper.findAll('input[type="text"]')[0].setValue('b1f8a0c2d3e4f5a6b7c8d9e0f1a2b3c4');
+    expect(settings.settings.deviceFingerprint.szlmId).toBe('b1f8a0c2d3e4f5a6b7c8d9e0f1a2b3c4');
     await wrapper.find('.switch-input').setValue(true);
     const inputs = wrapper.findAll('input[type="text"]');
     await wrapper.get('select').setValue('2211133C');
     expect(settings.settings.deviceFingerprint.model).toBe('2211133C');
     expect(settings.settings.deviceFingerprint.androidVersion).toBe('15');
-    await inputs[4].setValue('2600000');
+    await inputs[5].setValue('2600000');
     expect(wrapper.find('.version-warning').exists()).toBe(true);
     await wrapper.get('.reset-button').trigger('click');
     expect(settings.settings.deviceFingerprint.model).toBe('23113RKC6C');
     expect(settings.settings.deviceFingerprint.appCode).toBe('2604201');
     expect(settings.settings.deviceFingerprint.sdkInt).toBe('35');
+    expect(settings.settings.deviceFingerprint.szlmId).toBe('');
   });
 
   it('下载页展示缓存总量与明细', async () => {

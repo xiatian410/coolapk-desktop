@@ -89,7 +89,7 @@ export interface NavVisibilitySettings {
 
 /** 设备信息（请求头指纹）：机型/Android 版本/Build 内嵌于 User-Agent，
  * App 版本/版本号/SDK Int/Locale/暗色模式为独立请求头。
- * 注意：X-App-Device（设备码）与 X-App-Token 由账号绑定，不可自定义。 */
+ * 数字联盟ID 覆盖设备码（X-App-Device）首字段，用于修复写操作校验。 */
 export interface DeviceFingerprintSettings {
   /** 是否启用自定义设备信息（关闭时使用客户端默认值） */
   customFingerprint: boolean;
@@ -109,6 +109,9 @@ export interface DeviceFingerprintSettings {
   locale: string;
   /** X-Dark-Mode："0" 浅色 / "1" 深色 */
   darkMode: '0' | '1';
+  /** 数字联盟ID：留空使用默认设备码；填写后作为 X-App-Device 首字段，
+   * 覆盖游客/账号绑定的设备码（与 customFingerprint 开关相互独立） */
+  szlmId: string;
 }
 
 export interface AppSettings {

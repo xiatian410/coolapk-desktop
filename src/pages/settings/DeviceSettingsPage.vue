@@ -12,14 +12,42 @@
           </span>
         </div>
         <div class="status-row">
+          <span class="status-key">数字联盟ID</span>
+          <span :class="['status-value', deviceInfo?.szlmActive ? 'status-on' : '']">
+            {{ deviceInfo?.szlmActive ? '已生效（覆盖默认设备码）' : '未设置' }}
+          </span>
+        </div>
+        <div class="status-row">
           <span class="status-key">设备码（X-App-Device）</span>
           <code class="status-code" :title="deviceInfo?.deviceCode">{{ deviceInfo?.deviceCode || '加载中...' }}</code>
         </div>
         <p class="tray-tip">
           <i class="fas fa-info-circle"></i>
-          未登录时设备码为随机生成（每台电脑首次生成后固定）；登录后使用账号绑定的固定设备码（默认与 SDK 官方一致，可被写操作校验通过），请勿手动修改。
+          未登录时设备码为随机生成（每台电脑首次生成后固定）；登录后使用账号绑定的固定设备码（默认与 SDK 官方一致，可被写操作校验通过），请勿手动修改。填写下方数字联盟ID后，设备码将以该 ID 重新生成并覆盖以上默认行为。
         </p>
       </div>
+    </div>
+
+    <div class="setting-group">
+      <h4 class="group-title">数字联盟ID</h4>
+      <div class="setting-row">
+        <div class="row-info">
+          <span class="row-label">数字联盟ID</span>
+          <span class="row-sub">填写真实设备的数字联盟 ID，修复评论、发帖等写操作校验；留空使用默认设备码</span>
+        </div>
+        <input
+          v-model="settingsStore.settings.deviceFingerprint.szlmId"
+          type="text"
+          class="text-input szlm-input"
+          placeholder="留空使用默认设备码"
+          maxlength="64"
+          spellcheck="false"
+        />
+      </div>
+      <p class="tray-tip">
+        <i class="fas fa-info-circle"></i>
+        从官方客户端抓包的 X-App-Device（逆序 Base64 解码后首字段）获取。与登录状态及"自定义设备指纹"开关相互独立，修改后立即生效，清空即恢复默认设备码。
+      </p>
     </div>
 
     <div class="setting-group">
@@ -193,7 +221,7 @@
       <h4 class="group-title">注意事项</h4>
       <p class="tray-tip">
         <i class="fas fa-info-circle"></i>
-        设备码（X-App-Device）与请求令牌（X-App-Token）绑定账号，不支持自定义。修改机型、版本等字段后，若酷安返回"网络环境异常"或"请升级客户端"，说明该组合被服务端拒绝，请恢复默认或改用其他机型模板。
+        除数字联盟ID外，设备码（X-App-Device）与请求令牌（X-App-Token）绑定账号，不支持自定义。修改机型、版本等字段后，若酷安返回"网络环境异常"或"请升级客户端"，说明该组合被服务端拒绝，请恢复默认或改用其他机型模板。
       </p>
       <p class="tray-tip">
         <i class="fas fa-info-circle"></i>
@@ -212,8 +240,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAuthStore } from '../../stores/auth';
 import type { DeviceFingerprintSettings } from '../../types/settings';
 
-/** 当前生效设备信息（Rust 端查询）：登录态 + 设备码 */
-const deviceInfo = ref<{ loggedIn: boolean; deviceCode: string } | null>(null);
+/** 当前生效设备信息（Rust 端查询）：登录态 + 数字联盟ID覆盖态 + 设备码 */
+const deviceInfo = ref<{ loggedIn: boolean; deviceCode: string; szlmActive?: boolean } | null>(null);
 
 const authStore = useAuthStore();
 
@@ -238,6 +266,16 @@ const settingsStore = useSettingsStore();
 
 const fingerprint = computed(() => settingsStore.settings.deviceFingerprint);
 const previewUserAgent = computed(() => buildDeviceUserAgent(fingerprint.value));
+
+// 数字联盟ID 变更后延迟刷新设备码显示（Rust 端已即时生效）
+let szlmRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+watch(
+  () => fingerprint.value.szlmId,
+  () => {
+    clearTimeout(szlmRefreshTimer);
+    szlmRefreshTimer = setTimeout(loadDeviceInfo, 400);
+  }
+);
 
 const presetModel = computed({
   get: () => {
@@ -282,6 +320,7 @@ function resetToDefault() {
     sdkInt: '35',
     locale: 'zh-CN',
     darkMode: '0',
+    szlmId: '',
   };
   Object.assign(settingsStore.settings.deviceFingerprint, defaults);
 }
@@ -365,6 +404,11 @@ function resetToDefault() {
 
 .small-input {
   width: 130px;
+}
+
+.szlm-input {
+  width: 280px;
+  font-family: var(--font-mono, Consolas, monospace);
 }
 
 .select-input {

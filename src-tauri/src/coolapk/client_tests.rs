@@ -497,6 +497,90 @@ fn test_device_code_is_random() {
     );
 }
 
+/// 解码设备码（逆序 Base64）为原始设备信息字符串
+fn decode_device_code(code: &str) -> String {
+    let mut rev: String = code.chars().rev().collect();
+    let pad = (4 - (rev.len() % 4)) % 4;
+    rev.push_str(&"=".repeat(pad));
+    let bytes = BASE64.decode(rev.as_bytes()).expect("设备码应为合法 Base64");
+    String::from_utf8(bytes).expect("设备码应为合法 UTF-8")
+}
+
+/// 数字联盟ID设备码：同一 ID 生成稳定结果，首字段即该 ID
+#[test]
+fn test_szlm_device_code_is_stable_and_embeds_id() {
+    let szlm = "b1f8a0c2d3e4f5a6b7c8d9e0f1a2b3c4";
+    let a = generate_device_code_with_szlm(szlm);
+    let b = generate_device_code_with_szlm(szlm);
+    assert_eq!(a, b, "同一数字联盟ID必须生成相同设备码（Token V3 与设备码绑定）");
+    assert_ne!(
+        a,
+        generate_device_code_with_szlm("ffffffffffffffffffffffffffffffff"),
+        "不同数字联盟ID应生成不同设备码"
+    );
+    assert!(is_valid_device_code(&a), "设备码必须符合官方规范格式");
+    assert!(
+        HeaderValue::from_str(&a).is_ok(),
+        "设备码必须是合法 HTTP header 值"
+    );
+    let decoded = decode_device_code(&a);
+    assert!(
+        decoded.starts_with(&format!("{szlm}; ; ; ")),
+        "设备码首字段应为数字联盟ID，实际为: {decoded}"
+    );
+    assert!(decoded.ends_with("; null"), "设备码应以 null 结尾");
+}
+
+/// sync_device_code 在设置数字联盟ID后覆盖游客/账号设备码
+#[test]
+fn test_sync_device_code_prefers_szlm_id() {
+    let client = CoolapkClient::new();
+    let profile = serde_json::from_value::<DeviceProfile>(serde_json::json!({
+        "szlmId": "b1f8a0c2d3e4f5a6b7c8d9e0f1a2b3c4"
+    }))
+    .unwrap();
+    client.update_device_profile(profile);
+    let code = client.device_code.read().unwrap().clone();
+    assert!(
+        decode_device_code(&code).starts_with("b1f8a0c2d3e4f5a6b7c8d9e0f1a2b3c4;"),
+        "生效设备码应以数字联盟ID为首字段"
+    );
+
+    // 清空数字联盟ID后恢复默认（游客设备码）
+    client.update_device_profile(DeviceProfile::default());
+    let code = client.device_code.read().unwrap().clone();
+    assert!(
+        !decode_device_code(&code).starts_with("b1f8a0c2d3e4f5a6b7c8d9e0f1a2b3c4;"),
+        "清空数字联盟ID后应恢复默认设备码"
+    );
+}
+
+/// 数字联盟ID输入清洗：空白/分号/控制字符剔除，纯空白视为未设置
+#[test]
+fn test_custom_szlm_id_sanitizes_input() {
+    let client = CoolapkClient::new();
+    let profile = serde_json::from_value::<DeviceProfile>(serde_json::json!({
+        "szlmId": "  b1f8; a0c2\n\t d3e4  "
+    }))
+    .unwrap();
+    client.update_device_profile(profile);
+    let code = client.device_code.read().unwrap().clone();
+    let decoded = decode_device_code(&code);
+    assert!(
+        decoded.starts_with("b1f8a0c2d3e4;"),
+        "清洗后的数字联盟ID应为 b1f8a0c2d3e4，实际首字段: {}",
+        decoded.split(';').next().unwrap_or_default()
+    );
+
+    let profile = serde_json::from_value::<DeviceProfile>(serde_json::json!({
+        "szlmId": "   \n\t  "
+    }))
+    .unwrap();
+    client.update_device_profile(profile);
+    let info = client.get_device_info().unwrap();
+    assert_eq!(info["data"]["szlmActive"], serde_json::json!(false), "纯空白ID视为未设置");
+}
+
 #[test]
 fn test_account_cookie_requires_real_sessid() {
     assert!(CoolapkClient::has_valid_session_cookie(
