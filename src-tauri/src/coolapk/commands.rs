@@ -2125,6 +2125,27 @@ pub fn get_device_info(state: State<'_, AppState>) -> Result<Value, String> {
     state.client.get_device_info()
 }
 
+/// 随机重掷设备码（风控换新身份），随时可再掷或恢复默认
+#[tauri::command]
+pub fn regenerate_device_code(state: State<'_, AppState>) -> Result<Value, String> {
+    state.client.regenerate_device_code()
+}
+
+/// 清除随机设备码覆盖，恢复默认设备码
+#[tauri::command]
+pub fn reset_device_code(state: State<'_, AppState>) -> Result<Value, String> {
+    state.client.reset_device_code()
+}
+
+/// 验证数字联盟ID可用性（无副作用探测写接口，验证后自动恢复原设备身份）
+#[tauri::command]
+pub async fn verify_szlm_id(
+    state: State<'_, AppState>,
+    szlm_id: String,
+) -> Result<Value, String> {
+    state.client.verify_szlm_id(szlm_id).await
+}
+
 #[tauri::command]
 pub async fn save_cookie_securely(
     state: State<'_, AppState>,

@@ -32,6 +32,9 @@ const DDI_EVENT_PATHS: &[&str] = &[
 /// 酷安服务端下发的 `PostToken.List`（需网易易盾 `_v2_post_token`）。
 const POST_TOKEN_PATHS: &[&str] = &["/v6/feed/createFeed", "/v6/feed/reply"];
 
+/// 服务端错误消息中代表设备/风控拒绝的关键词（verify_szlm_id 判定用）
+const DEVICE_REJECT_HINTS: [&str; 7] = ["环境", "风控", "异常", "设备", "415", "验证失败", "操作频繁"];
+
 fn cookie_without_ddid(cookie: &str) -> String {
     cookie
         .split(';')
@@ -881,14 +884,17 @@ impl CoolapkClient {
             .get_app_token()
     }
 
-    /// 同步设备码，优先级：数字联盟ID > 账号绑定 > 游客。
+    /// 同步设备码，优先级：数字联盟ID > 随机覆盖 > 账号绑定 > 游客。
     /// - 用户填写数字联盟ID：以其为首字段派生设备码（设置持久化，无需落盘）
+    /// - 随机覆盖：用户手动重掷的随机设备码（风控换新身份，可随时清除）
     /// - 已登录：使用该账号绑定的固定设备码
     /// - 未登录：使用本机持久化的游客设备码（每台电脑首次生成后固定）
     pub fn sync_device_code(&self) {
         let uid = self.current_uid();
         let code = if let Some(szlm_id) = self.custom_szlm_id() {
             generate_device_code_with_szlm(&szlm_id)
+        } else if let Some(code) = self.random_device_code_override() {
+            code
         } else if let Some(uid) = uid {
             self.account_device_code(&uid)
         } else {
@@ -900,6 +906,91 @@ impl CoolapkClient {
         if let Ok(mut guard) = self.device_code.write() {
             *guard = code;
         }
+    }
+
+    /// 当前设备码来源（设置页展示用），与 sync_device_code 的优先级保持一致
+    fn device_code_source(&self) -> &'static str {
+        if self.custom_szlm_id().is_some() {
+            "szlm"
+        } else if self.random_device_code_override().is_some() {
+            "random"
+        } else if self.current_uid().is_some() {
+            "account"
+        } else {
+            "guest"
+        }
+    }
+
+    /// 随机重掷设备码：生成新的随机设备码作为覆盖并立即生效（随时可再掷或恢复默认）。
+    /// 数字联盟ID生效时拒绝：两者互斥，避免静默覆盖用户填写的真实 ID。
+    pub fn regenerate_device_code(&self) -> Result<Value, String> {
+        if self.custom_szlm_id().is_some() {
+            return Err("数字联盟ID生效中，请先清空后再随机生成设备码".to_string());
+        }
+        if self.accounts_file_path().is_none() {
+            return Err("账号存储尚未初始化，无法保存随机设备码".to_string());
+        }
+        let code = self.set_random_device_code_override();
+        self.sync_device_code();
+        Ok(json!({ "code": 200, "data": { "deviceCode": code } }))
+    }
+
+    /// 清除随机设备码覆盖，恢复默认（数字联盟ID > 账号绑定 > 游客）
+    pub fn reset_device_code(&self) -> Result<Value, String> {
+        self.clear_random_device_code_override();
+        self.sync_device_code();
+        let code = self
+            .device_code
+            .read()
+            .map_err(|_| "failed to read device code".to_string())?
+            .clone();
+        Ok(json!({ "code": 200, "data": { "deviceCode": code } }))
+    }
+
+    /// 验证数字联盟ID是否可用：临时套用该 ID 探测一个无副作用的写接口，
+    /// 依据服务端响应判断是否通过设备校验，随后恢复原设备身份。
+    ///
+    /// 探测用 like + 不存在的 id：不会产生真实点赞；设备校验未通过时服务端
+    /// 返回风控/环境类错误，通过时返回"内容不存在"类参数错误。
+    pub async fn verify_szlm_id(&self, szlm_id: String) -> Result<Value, String> {
+        let szlm_id = szlm_id.trim().to_string();
+        if szlm_id.is_empty() {
+            return Ok(json!({ "code": 200, "data": { "ok": false, "detail": "数字联盟ID为空" } }));
+        }
+        if self.user_cookie.read().map(|c| c.is_none()).unwrap_or(true) {
+            return Ok(json!({ "code": 200, "data": { "ok": false, "detail": "请先登录：写接口的设备校验需要登录态" } }));
+        }
+
+        // 临时套用待验证 ID（update_device_profile 会连带重掷设备码与签名身份）
+        let previous = self
+            .device_profile
+            .read()
+            .map_err(|_| "failed to read device profile".to_string())?
+            .clone();
+        let mut probing = previous.clone();
+        probing.szlm_id = Some(szlm_id);
+        self.update_device_profile(probing);
+
+        let probe = self.api_get("/v6/feed/like", &[("id", "0".to_string())]).await;
+
+        // 无论结果如何都先恢复验证前的设备身份，避免影响后续请求
+        self.update_device_profile(previous);
+
+        let (ok, detail) = match probe {
+            Ok(_) => (true, "接口校验通过".to_string()),
+            Err(msg) => {
+                let m = msg.trim();
+                if m.contains("登录") {
+                    (false, format!("服务端要求登录：{m}"))
+                } else if DEVICE_REJECT_HINTS.iter().any(|h| m.contains(h)) {
+                    (false, format!("设备校验未通过：{m}"))
+                } else {
+                    // like 一个不存在的 id，设备校验通过时只会得到参数类错误
+                    (true, format!("设备校验通过（接口返回预期的参数错误）：{m}"))
+                }
+            }
+        };
+        Ok(json!({ "code": 200, "data": { "ok": ok, "detail": detail } }))
     }
 
     /// 用户在设置页填写的数字联盟ID：去除首尾空白、剔除分号与控制字符后
@@ -975,6 +1066,34 @@ impl CoolapkClient {
         code
     }
 
+    /// 随机设备码覆盖（用户手动重掷的身份）：读取持久化的覆盖值
+    fn random_device_code_override(&self) -> Option<String> {
+        self.load_accounts_root()
+            .get("randomDeviceCode")
+            .and_then(|v| v.as_str())
+            .filter(|c| is_valid_device_code(c))
+            .map(str::to_owned)
+    }
+
+    /// 重掷并持久化随机设备码覆盖
+    fn set_random_device_code_override(&self) -> String {
+        let mut root = self.load_accounts_root();
+        let code = generate_random_device_code();
+        root["randomDeviceCode"] = json!(code.clone());
+        self.save_accounts_root(&root);
+        code
+    }
+
+    /// 清除随机设备码覆盖（无覆盖时不动磁盘）
+    fn clear_random_device_code_override(&self) {
+        let mut root = self.load_accounts_root();
+        if let Some(obj) = root.as_object_mut() {
+            if obj.remove("randomDeviceCode").is_some() {
+                self.save_accounts_root(&root);
+            }
+        }
+    }
+
     /// 将用户自定义设备信息覆盖到请求头（None 字段保留默认值）。
     /// X-App-Device 由当前生效设备码决定（游客随机/账号固定），此处统一写入。
     fn apply_device_profile(
@@ -1038,7 +1157,7 @@ impl CoolapkClient {
         self.sync_device_code();
     }
 
-    /// 当前设备信息（设置页展示用）：登录态 + 生效设备码 + 数字联盟ID覆盖态
+    /// 当前设备信息（设置页展示用）：登录态 + 生效设备码 + 来源 + 数字联盟ID覆盖态
     pub fn get_device_info(&self) -> Result<Value, String> {
         let code = self
             .device_code
@@ -1051,7 +1170,8 @@ impl CoolapkClient {
             .map_err(|_| "failed to read login state".to_string())?
             .is_some();
         let szlm_active = self.custom_szlm_id().is_some();
-        Ok(json!({ "code": 200, "data": { "loggedIn": logged_in, "szlmActive": szlm_active, "deviceCode": code } }))
+        let code_source = self.device_code_source();
+        Ok(json!({ "code": 200, "data": { "loggedIn": logged_in, "szlmActive": szlm_active, "codeSource": code_source, "deviceCode": code } }))
     }
 
     /// 绑定 Cookie 持久化文件路径，并载入上次保存的登录凭据

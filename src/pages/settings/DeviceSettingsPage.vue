@@ -18,12 +18,23 @@
           </span>
         </div>
         <div class="status-row">
+          <span class="status-key">设备码来源</span>
+          <span
+            :class="[
+              'status-value',
+              deviceInfo?.codeSource === 'szlm' || deviceInfo?.codeSource === 'random' ? 'status-on' : '',
+            ]"
+          >
+            {{ codeSourceLabel }}
+          </span>
+        </div>
+        <div class="status-row">
           <span class="status-key">设备码（X-App-Device）</span>
           <code class="status-code" :title="deviceInfo?.deviceCode">{{ deviceInfo?.deviceCode || '加载中...' }}</code>
         </div>
         <p class="tray-tip">
           <i class="fas fa-info-circle"></i>
-          未登录时设备码为随机生成（每台电脑首次生成后固定）；登录后使用账号绑定的固定设备码（默认与 SDK 官方一致，可被写操作校验通过），请勿手动修改。填写下方数字联盟ID后，设备码将以该 ID 重新生成并覆盖以上默认行为。
+          未登录时设备码为随机生成（每台电脑首次生成后固定）；登录后使用账号绑定的固定设备码（默认与 SDK 官方一致，可被写操作校验通过），请勿手动修改。填写下方数字联盟ID后，设备码将以该 ID 重新生成并覆盖以上默认行为，也可随时随机重掷设备码。
         </p>
       </div>
     </div>
@@ -33,24 +44,71 @@
       <div class="setting-row">
         <div class="row-info">
           <span class="row-label">数字联盟ID</span>
-          <span class="row-sub">填写真实设备的数字联盟 ID，修复评论、发帖等写操作校验；留空使用默认设备码</span>
+          <span class="row-sub">填写自己手机的数字联盟 ID，修复评论、发帖等写操作校验；留空使用默认设备码</span>
         </div>
-        <input
-          v-model="settingsStore.settings.deviceFingerprint.szlmId"
-          type="text"
-          class="text-input szlm-input"
-          placeholder="留空使用默认设备码"
-          maxlength="64"
-          spellcheck="false"
-        />
+        <div class="szlm-actions">
+          <input
+            v-model="settingsStore.settings.deviceFingerprint.szlmId"
+            type="text"
+            class="text-input szlm-input"
+            placeholder="留空使用默认设备码"
+            maxlength="64"
+            spellcheck="false"
+          />
+          <button
+            class="action-button compact"
+            :disabled="verifying || !fingerprint.szlmId.trim()"
+            @click="verifySzlm"
+          >
+            <i :class="verifying ? 'fas fa-spinner fa-spin' : 'fas fa-check'"></i>
+            {{ verifying ? '验证中' : '验证' }}
+          </button>
+        </div>
       </div>
+      <p v-if="verifyResult" :class="['verify-result', verifyResult.ok ? 'ok' : 'fail']">
+        <i :class="verifyResult.ok ? 'fas fa-check-circle' : 'fas fa-times-circle'"></i>
+        {{ verifyResult.detail }}
+      </p>
       <p class="tray-tip">
         <i class="fas fa-info-circle"></i>
-        从官方客户端抓包的 X-App-Device（逆序 Base64 解码后首字段）获取。与登录状态及"自定义设备指纹"开关相互独立，修改后立即生效，清空即恢复默认设备码。
+        获取方法（须用自己手机）：手机安装抓包工具证书（Reqable/Charles 等）抓官方酷安的 api.coolapk.com 请求，复制任意请求的 X-App-Device 头，逆序 Base64 解码后首字段即数字联盟ID；也可用 adb logcat 过滤 szlm/ddid。填写后点"验证"确认可用——验证需先登录，会临时套用该 ID 探测写接口并自动恢复原身份，无副作用。
       </p>
       <p class="szlm-warning">
         <i class="fas fa-exclamation-triangle"></i>
         必须填写自己手机的数字联盟ID：共享或使用他人的ID会被风控封禁，设备号被封后该手机将无法使用酷安。填写后建议在"自定义设备指纹"中将机型设为与该手机一致，以降低校验风险。
+      </p>
+    </div>
+
+    <div class="setting-group">
+      <h4 class="group-title">随机设备码</h4>
+      <div class="setting-row">
+        <div class="row-info">
+          <span class="row-label">随时随机生成</span>
+          <span class="row-sub">立即掷出新的随机设备码并生效（设备码被风控时可换新身份），无需重启客户端</span>
+        </div>
+        <div class="szlm-actions">
+          <button
+            v-if="deviceInfo?.codeSource === 'random'"
+            class="action-button compact"
+            @click="resetDeviceCode"
+          >
+            <i class="fas fa-undo"></i>
+            恢复默认
+          </button>
+          <button
+            class="action-button compact primary"
+            :disabled="deviceInfo?.szlmActive"
+            :title="deviceInfo?.szlmActive ? '数字联盟ID生效中，请先清空后再随机生成' : ''"
+            @click="randomizeDeviceCode"
+          >
+            <i class="fas fa-random"></i>
+            随机生成
+          </button>
+        </div>
+      </div>
+      <p class="tray-tip">
+        <i class="fas fa-info-circle"></i>
+        随机设备码只更换客户端的伪装身份，随时生成、随时恢复默认（账号绑定/游客）；数字联盟ID填写的真实身份优先级更高，与随机设备码互斥。
       </p>
     </div>
 
@@ -73,12 +131,17 @@
             <span class="row-label">预设机型</span>
             <span class="row-sub">一键套用常见机型模板，或选择"自定义"手动输入</span>
           </div>
-          <select v-model="presetModel" class="text-input select-input">
-            <option value="">自定义机型</option>
-            <option v-for="p in DEVICE_PRESETS" :key="p.model" :value="p.model">
-              {{ p.label }}（{{ p.model }}）
-            </option>
-          </select>
+          <div class="preset-actions">
+            <select v-model="presetModel" class="text-input select-input">
+              <option value="">自定义机型</option>
+              <option v-for="p in DEVICE_PRESETS" :key="p.model" :value="p.model">
+                {{ p.label }}（{{ p.model }}）
+              </option>
+            </select>
+            <button class="mini-button" title="随机套用一款机型" @click="randomizePreset">
+              <i class="fas fa-random"></i>
+            </button>
+          </div>
         </div>
 
         <div class="setting-row">
@@ -242,10 +305,16 @@ import AppSwitch from '../../components/common/AppSwitch.vue';
 import { DEVICE_PRESETS } from '../../utils/devicePresets';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuthStore } from '../../stores/auth';
+import { showToast } from '../../utils/toast';
 import type { DeviceFingerprintSettings } from '../../types/settings';
 
-/** 当前生效设备信息（Rust 端查询）：登录态 + 数字联盟ID覆盖态 + 设备码 */
-const deviceInfo = ref<{ loggedIn: boolean; deviceCode: string; szlmActive?: boolean } | null>(null);
+/** 当前生效设备信息（Rust 端查询）：登录态 + 数字联盟ID覆盖态 + 设备码来源 + 设备码 */
+const deviceInfo = ref<{
+  loggedIn: boolean;
+  deviceCode: string;
+  szlmActive?: boolean;
+  codeSource?: 'szlm' | 'random' | 'account' | 'guest';
+} | null>(null);
 
 const authStore = useAuthStore();
 
@@ -270,6 +339,75 @@ const settingsStore = useSettingsStore();
 
 const fingerprint = computed(() => settingsStore.settings.deviceFingerprint);
 const previewUserAgent = computed(() => buildDeviceUserAgent(fingerprint.value));
+
+const CODE_SOURCE_LABELS: Record<string, string> = {
+  szlm: '数字联盟ID',
+  random: '随机生成',
+  account: '账号绑定',
+  guest: '游客（本机固定）',
+};
+const codeSourceLabel = computed(
+  () => CODE_SOURCE_LABELS[deviceInfo.value?.codeSource ?? ''] ?? '加载中...'
+);
+
+/** 数字联盟ID可用性验证：临时套用该 ID 探测写接口（Rust 端自动恢复原身份） */
+const verifying = ref(false);
+const verifyResult = ref<{ ok: boolean; detail: string } | null>(null);
+async function verifySzlm() {
+  const id = fingerprint.value.szlmId.trim();
+  if (!id || verifying.value) return;
+  verifying.value = true;
+  verifyResult.value = null;
+  try {
+    const res = await invoke<any>('verify_szlm_id', { szlmId: id });
+    if (res?.code === 200 && res.data) {
+      verifyResult.value = { ok: !!res.data.ok, detail: res.data.detail || '验证完成' };
+    } else {
+      verifyResult.value = { ok: false, detail: '验证接口无响应' };
+    }
+  } catch (err) {
+    verifyResult.value = { ok: false, detail: `验证失败：${err}` };
+  } finally {
+    verifying.value = false;
+  }
+}
+
+/** 随机重掷设备码（风控换新身份），随时可再掷或恢复默认 */
+async function randomizeDeviceCode() {
+  try {
+    await invoke('regenerate_device_code');
+    showToast('已生成新的随机设备码', 'success');
+  } catch (err) {
+    showToast(String(err), 'error');
+  }
+  loadDeviceInfo();
+}
+
+/** 清除随机覆盖，恢复默认设备码（数字联盟ID > 账号绑定 > 游客） */
+async function resetDeviceCode() {
+  try {
+    await invoke('reset_device_code');
+    showToast('已恢复默认设备码', 'success');
+  } catch (err) {
+    showToast(String(err), 'error');
+  }
+  loadDeviceInfo();
+}
+
+/** 随机套用一款机型模板（避开当前机型），SDK 版本随安卓版本联动 */
+const ANDROID_SDK_MAP: Record<string, string> = { '14': '34', '15': '35', '16': '36' };
+function randomizePreset() {
+  const current = fingerprint.value.model.trim();
+  const pool = DEVICE_PRESETS.filter((p) => p.model !== current);
+  const preset = pool[Math.floor(Math.random() * pool.length)];
+  if (!preset) return;
+  Object.assign(fingerprint.value, {
+    model: preset.model,
+    androidVersion: preset.androidVersion,
+    build: preset.build,
+    sdkInt: ANDROID_SDK_MAP[preset.androidVersion] ?? fingerprint.value.sdkInt,
+  });
+}
 
 // 数字联盟ID 变更后延迟刷新设备码显示（Rust 端已即时生效）
 let szlmRefreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -413,6 +551,92 @@ function resetToDefault() {
 .szlm-input {
   width: 280px;
   font-family: var(--font-mono, Consolas, monospace);
+}
+
+.szlm-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.preset-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.mini-button {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  font-size: var(--font-size-sub);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.mini-button:hover {
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+}
+
+.action-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  background-color: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 8px 16px;
+  font-size: var(--font-size-sub);
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.action-button.compact {
+  padding: 6px 14px;
+}
+
+.action-button:hover:not(:disabled) {
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+}
+
+.action-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.action-button.primary {
+  color: var(--brand-primary);
+}
+
+.verify-result {
+  font-size: var(--font-size-caption);
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  margin: 0;
+}
+
+.verify-result i {
+  margin-top: 2px;
+}
+
+.verify-result.ok {
+  color: var(--brand-primary);
+}
+
+.verify-result.fail {
+  color: #e0533d;
 }
 
 .select-input {

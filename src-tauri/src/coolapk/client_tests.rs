@@ -555,6 +555,63 @@ fn test_sync_device_code_prefers_szlm_id() {
     );
 }
 
+/// 随机设备码覆盖：重掷后覆盖默认身份，恢复后回到原游客设备码
+#[test]
+fn test_random_device_code_override_roundtrip() {
+    let dir = std::env::temp_dir().join(format!("szlm-override-test-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let client = CoolapkClient::new();
+    client.persist_cookie_to(dir.join("session_cookie.txt"));
+    client.sync_device_code();
+    let before = client.device_code.read().unwrap().clone();
+
+    let rolled = client.regenerate_device_code().unwrap()["data"]["deviceCode"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let after = client.device_code.read().unwrap().clone();
+    assert_ne!(before, rolled, "重掷后设备码应变化");
+    assert_eq!(rolled, after, "生效设备码应为重掷结果");
+    assert!(is_valid_device_code(&rolled));
+    assert_eq!(
+        client.get_device_info().unwrap()["data"]["codeSource"],
+        serde_json::json!("random")
+    );
+
+    // 数字联盟ID生效时拒绝重掷（两者互斥，避免覆盖用户填写的真实 ID）
+    let profile = serde_json::from_value::<DeviceProfile>(serde_json::json!({
+        "szlmId": "b1f8a0c2d3e4f5a6b7c8d9e0f1a2b3c4"
+    }))
+    .unwrap();
+    client.update_device_profile(profile);
+    assert!(
+        client.regenerate_device_code().is_err(),
+        "数字联盟ID生效时应拒绝重掷"
+    );
+    assert_eq!(
+        client.get_device_info().unwrap()["data"]["codeSource"],
+        serde_json::json!("szlm")
+    );
+
+    // 清空数字联盟ID后：随机覆盖仍在生效
+    client.update_device_profile(DeviceProfile::default());
+    assert_eq!(
+        client.get_device_info().unwrap()["data"]["codeSource"],
+        serde_json::json!("random")
+    );
+
+    // 清除随机覆盖：恢复原游客设备码
+    client.reset_device_code().unwrap();
+    let restored = client.device_code.read().unwrap().clone();
+    assert_eq!(before, restored, "清除覆盖后应恢复原游客设备码");
+    assert_eq!(
+        client.get_device_info().unwrap()["data"]["codeSource"],
+        serde_json::json!("guest")
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 数字联盟ID输入清洗：空白/分号/控制字符剔除，纯空白视为未设置
 #[test]
 fn test_custom_szlm_id_sanitizes_input() {

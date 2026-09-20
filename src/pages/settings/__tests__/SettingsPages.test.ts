@@ -42,6 +42,7 @@ import StartupSettingsPage from '../StartupSettingsPage.vue';
 import SettingsLayout from '../SettingsLayout.vue';
 import ShortcutSettingsPage from '../ShortcutSettingsPage.vue';
 import { useSettingsStore } from '../../../stores/settings';
+import { DEVICE_PRESETS } from '../../../utils/devicePresets';
 
 const RouterViewStub = { template: '<div><slot :Component="null" /></div>' };
 const RouterLinkStub = { props: ['to'], template: '<a><slot /></a>' };
@@ -144,11 +145,30 @@ describe('设置页面交互', () => {
     // 数字联盟ID：独立于自定义设备指纹开关，默认留空由用户填写
     await wrapper.findAll('input[type="text"]')[0].setValue('b1f8a0c2d3e4f5a6b7c8d9e0f1a2b3c4');
     expect(settings.settings.deviceFingerprint.szlmId).toBe('b1f8a0c2d3e4f5a6b7c8d9e0f1a2b3c4');
+    // 验证按钮触发 verify_szlm_id 命令（mock invoke 返回 undefined 时不崩溃）
+    const verifyBtn = wrapper.findAll('button').find((b) => b.text().includes('验证'))!;
+    await verifyBtn.trigger('click');
+    await flushPromises();
+    expect(invoke).toHaveBeenCalledWith('verify_szlm_id', { szlmId: 'b1f8a0c2d3e4f5a6b7c8d9e0f1a2b3c4' });
+    expect(wrapper.find('.verify-result').exists()).toBe(true);
+    // 随机设备码按钮触发 regenerate_device_code 命令
+    const randomBtn = wrapper.findAll('button').find((b) => b.text().includes('随机生成'))!;
+    await randomBtn.trigger('click');
+    await flushPromises();
+    expect(invoke).toHaveBeenCalledWith('regenerate_device_code');
     await wrapper.find('.switch-input').setValue(true);
     const inputs = wrapper.findAll('input[type="text"]');
     await wrapper.get('select').setValue('2211133C');
     expect(settings.settings.deviceFingerprint.model).toBe('2211133C');
     expect(settings.settings.deviceFingerprint.androidVersion).toBe('15');
+    // 随机机型按钮：套用任一预设（机型/安卓版本/SDK 联动）
+    await wrapper.get('.mini-button').trigger('click');
+    const applied = DEVICE_PRESETS.find((p) => p.model === settings.settings.deviceFingerprint.model);
+    expect(applied).toBeTruthy();
+    expect(settings.settings.deviceFingerprint.androidVersion).toBe(applied!.androidVersion);
+    expect(settings.settings.deviceFingerprint.sdkInt).toBe(
+      { '14': '34', '15': '35', '16': '36' }[applied!.androidVersion] ?? settings.settings.deviceFingerprint.sdkInt,
+    );
     await inputs[5].setValue('2600000');
     expect(wrapper.find('.version-warning').exists()).toBe(true);
     await wrapper.get('.reset-button').trigger('click');
