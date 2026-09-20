@@ -71,7 +71,7 @@
       </p>
       <p class="tray-tip">
         <i class="fas fa-info-circle"></i>
-        获取方法（须用自己手机）：手机安装抓包工具证书（Reqable/Charles 等）抓官方酷安的 api.coolapk.com 请求，复制任意请求的 X-App-Device 头，逆序 Base64 解码后首字段即数字联盟ID；也可用 adb logcat 过滤 szlm/ddid。填写后点"验证"确认可用——验证需先登录，会临时套用该 ID 探测写接口并自动恢复原身份，无副作用。
+        获取方法（须用自己设备）：运行仓库内置 tools/szlm-generator 一键生成器（自动在本地模拟器注册真实数字联盟ID，Windows/macOS/Linux 均可）；或手机抓包官方酷安的 X-App-Device 头，逆序 Base64 解码后取首字段；或 adb logcat 过滤 szlm/ddid。填写后点"验证"确认可用——验证需先登录，会临时套用该 ID 探测写接口并自动恢复原身份，无副作用。
       </p>
       <p class="szlm-warning">
         <i class="fas fa-exclamation-triangle"></i>
